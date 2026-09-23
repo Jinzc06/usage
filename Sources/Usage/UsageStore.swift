@@ -58,6 +58,8 @@ final class UsageStore {
     private(set) var generatedAt: Date?
     private(set) var showingCache = false
     var showSettings = false
+    let tokenHover = ChartHover()
+    let costHover = ChartHover()
     private(set) var settings = SettingsStore.load()
 
     private var inflight: Task<Void, Never>?
@@ -69,7 +71,12 @@ final class UsageStore {
         Task { await self.loop() }
     }
 
-    var legend: [StoredSlice] { UsageMath.cap(slices) }
+    var legend: [StoredSlice] {
+        slices.sorted { lhs, rhs in
+            if lhs.tokens != rhs.tokens { return lhs.tokens > rhs.tokens }
+            return lhs.name < rhs.name
+        }
+    }
     var totalTokens: Int { UsageMath.totalTokens(slices) }
     var totalCost: Decimal? { UsageMath.totalCost(slices) }
     var hasUnpriced: Bool { UsageMath.hasUnpriced(slices) }
@@ -175,7 +182,7 @@ final class UsageStore {
     private func logPreview() {
         guard ProcessInfo.processInfo.arguments.contains("--preview") else { return }
         let lines = legend.map { slice in
-            let cost = slice.costDecimal.map(UsageMath.formatUSD) ?? "未标价"
+            let cost = slice.costDecimal.map(UsageMath.formatUSD) ?? "—"
             return "\(slice.name) \(UsageMath.formatTokens(slice.tokens)) \(cost)"
         }
         let summary = "TODAY \(statusTitle) \(lines.joined(separator: " | "))\nSOURCES \(sources.map(\.detail).joined(separator: " · "))\n"

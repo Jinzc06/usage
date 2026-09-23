@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct PopoverView: View {
@@ -6,18 +7,8 @@ struct PopoverView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                card(
-                    title: "模型 · TOKENS",
-                    center: tokenCenter,
-                    note: nil,
-                    fractions: tokenFractions
-                )
-                card(
-                    title: "模型 · COST",
-                    center: costCenter,
-                    note: store.hasUnpriced ? "未标价" : nil,
-                    fractions: costFractions
-                )
+                card(title: "模型 · TOKENS", center: tokenCenter, slices: tokenSlices, hover: store.tokenHover)
+                card(title: "模型 · COST", center: costCenter, slices: costSlices, hover: store.costHover)
             }
             if store.showSettings {
                 SettingsPanel(store: store)
@@ -30,18 +21,14 @@ struct PopoverView: View {
         .onAppear { store.refresh() }
     }
 
-    private func card(title: String, center: String, note: String?, fractions: [(Color, Double)]) -> some View {
+    private func card(title: String, center: String, slices: [DonutSlice], hover: ChartHover) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title)
                 .font(.system(size: 11, weight: .semibold))
                 .tracking(1.1)
                 .foregroundStyle(Palette.muted)
             HStack(alignment: .center, spacing: 8) {
-                DonutChart(
-                    fractions: fractions.map { (color: $0.0, fraction: $0.1) },
-                    center: center,
-                    note: note
-                )
+                DonutChart(slices: slices, center: center, hover: hover)
                 legend
             }
         }
@@ -59,7 +46,7 @@ struct PopoverView: View {
     }
 
     private var legend: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 5) {
             if store.legend.isEmpty {
                 Text(emptyLegend)
                     .font(.system(size: 12))
@@ -84,10 +71,6 @@ struct PopoverView: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(basis)
-                .font(.system(size: 11))
-                .foregroundStyle(Palette.muted)
-                .fixedSize(horizontal: false, vertical: true)
             HStack(alignment: .center, spacing: 10) {
                 HStack(spacing: 8) {
                     ForEach(store.sources) { source in
@@ -105,16 +88,16 @@ struct PopoverView: View {
                 }
                 .buttonStyle(.plain)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(store.showSettings ? Palette.paper : Palette.ink)
+                .foregroundStyle(store.showSettings ? Color.white : Palette.accent)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
                 .background(
                     Capsule(style: .continuous)
-                        .fill(store.showSettings ? Palette.ink : Color.clear)
+                        .fill(store.showSettings ? Palette.accent : Color.clear)
                 )
                 .overlay(
                     Capsule(style: .continuous)
-                        .stroke(Palette.ink.opacity(store.showSettings ? 0 : 0.28), lineWidth: 1)
+                        .stroke(Palette.accent.opacity(store.showSettings ? 0 : 0.45), lineWidth: 1)
                 )
                 Button(store.refreshing ? "更新中" : "刷新") {
                     store.refresh()
@@ -139,19 +122,32 @@ struct PopoverView: View {
         return UsageMath.formatUSD(cost)
     }
 
-    private var tokenFractions: [(Color, Double)] {
+    private var tokenSlices: [DonutSlice] {
         let total = Double(store.totalTokens)
         guard total > 0 else { return [] }
-        return store.legend.map { (color(for: $0.name), Double($0.tokens) / total) }
+        return store.legend.compactMap { slice in
+            guard slice.tokens > 0 else { return nil }
+            return DonutSlice(
+                name: slice.name,
+                color: color(for: slice.name),
+                fraction: Double(slice.tokens) / total,
+                label: UsageMath.formatTokens(slice.tokens)
+            )
+        }
     }
 
-    private var costFractions: [(Color, Double)] {
+    private var costSlices: [DonutSlice] {
         guard let total = store.totalCost, total > 0 else { return [] }
         let totalDouble = NSDecimalNumber(decimal: total).doubleValue
         guard totalDouble > 0 else { return [] }
         return store.legend.compactMap { slice in
             guard let cost = slice.costDecimal, cost > 0 else { return nil }
-            return (color(for: slice.name), NSDecimalNumber(decimal: cost).doubleValue / totalDouble)
+            return DonutSlice(
+                name: slice.name,
+                color: color(for: slice.name),
+                fraction: NSDecimalNumber(decimal: cost).doubleValue / totalDouble,
+                label: UsageMath.formatUSD(cost)
+            )
         }
     }
 
@@ -177,15 +173,6 @@ struct PopoverView: View {
     private func sourceColor(_ source: SourceReport) -> Color {
         if !store.settings.isEnabled(source.name) { return Palette.muted }
         return source.ok ? Palette.ink.opacity(0.72) : Palette.clay
-    }
-
-    private var basis: String {
-        var text = store.settings.includeEstimates
-            ? "今天 · Cursor 为账单实扣，其余为标价估算"
-            : "今天 · 只计 Cursor 账单"
-        if store.hasUnpriced { text += " · 有模型未标价" }
-        if store.showingCache { text += " · 显示上次结果" }
-        return text
     }
 
     private var stamp: String {
@@ -237,6 +224,15 @@ private struct SettingsPanel: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            Divider()
+                .overlay(Palette.line)
+            Button("退出") {
+                NSApp.terminate(nil)
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(Palette.clay)
+            .contentShape(Rectangle())
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -275,15 +271,15 @@ private struct CheckMark: View {
 
     var body: some View {
         RoundedRectangle(cornerRadius: 4, style: .continuous)
-            .fill(on ? Palette.ink : Color.clear)
+            .fill(on ? Palette.accent : Color.clear)
             .overlay(
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .stroke(on ? Palette.ink : Palette.muted, lineWidth: 1)
+                    .stroke(on ? Palette.accent : Palette.muted, lineWidth: 1)
             )
             .overlay {
                 if on {
                     CheckShape()
-                        .stroke(Palette.paper, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                        .stroke(Color.white, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
                         .frame(width: 8, height: 6)
                 }
             }

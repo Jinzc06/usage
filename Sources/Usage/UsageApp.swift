@@ -34,7 +34,7 @@ final class StatusController: NSObject, NSPopoverDelegate {
             window.title = "今天用量"
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
-            window.backgroundColor = NSColor(srgbRed: 243 / 255, green: 239 / 255, blue: 230 / 255, alpha: 1)
+            window.backgroundColor = NSColor(srgbRed: 244 / 255, green: 248 / 255, blue: 255 / 255, alpha: 1)
             window.setContentSize(NSSize(width: 588, height: 320))
             window.center()
             window.makeKeyAndOrderFront(nil)

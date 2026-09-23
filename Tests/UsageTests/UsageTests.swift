@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 
 @testable import Usage
@@ -40,11 +41,22 @@ import Testing
     #expect(parts.total == 42)
 }
 
-@Test func tokenFormatUsesWanAboveTenThousand() {
-    #expect(UsageMath.formatTokens(47_598_800) == "4759.88万")
-    #expect(UsageMath.formatTokens(10_000) == "1.00万")
-    #expect(UsageMath.formatTokens(9_999) == "9999")
+@Test func tokenFormatUsesThousandsMillionsBillions() {
+    #expect(UsageMath.formatTokens(47_598_800) == "47.60M")
+    #expect(UsageMath.formatTokens(10_000) == "10.00K")
+    #expect(UsageMath.formatTokens(999) == "999")
+    #expect(UsageMath.formatTokens(1_500_000_000) == "1.50B")
     #expect(UsageMath.formatTokens(0) == "0")
+}
+
+@Test func donutHoverHitsTheSegmentUnderThePointer() {
+    let slices = [
+        DonutSlice(name: "A", color: .blue, fraction: 0.5, label: "1"),
+        DonutSlice(name: "B", color: .orange, fraction: 0.5, label: "1"),
+    ]
+    #expect(DonutHit.hit(slices, at: CGPoint(x: 62, y: 8), side: 124, lineWidth: 16) == "A")
+    #expect(DonutHit.hit(slices, at: CGPoint(x: 8, y: 62), side: 124, lineWidth: 16) == "B")
+    #expect(DonutHit.hit(slices, at: CGPoint(x: 62, y: 62), side: 124, lineWidth: 16) == nil)
 }
 
 @Test func shortNames() {
@@ -55,6 +67,9 @@ import Testing
     #expect(UsageMath.shortName("GLM-5.3-Flash") == "GLM Flash")
     #expect(UsageMath.shortName("grok-4.7-xhigh") == "Grok 4.7")
     #expect(UsageMath.shortName("grok-4.7-xhigh-fast") == "Grok 4.7 Fast")
+    #expect(UsageMath.shortName("cursor-grok-4.6-high") == "Grok 4.6")
+    #expect(UsageMath.shortName("claude-opus-5-5-max") == "Opus 5.5 Max")
+    #expect(UsageMath.shortName("claude-opus-5-5-high") == "Opus 5.5 High")
 }
 
 @Test func capMergesTheTail() {

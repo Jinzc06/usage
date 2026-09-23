@@ -92,6 +92,7 @@ enum UsageMath {
         if let version = familyVersion(id, family: "luna") { return "\(version) Luna" }
         if let version = familyVersion(id, family: "terra") { return "\(version) Terra" }
         if let grok = grokLabel(raw) { return grok }
+        if let opus = opusLabel(raw) { return opus }
         switch id {
         case "k3", "kimi-k3":
             return "k3"
@@ -187,11 +188,18 @@ enum UsageMath {
     }
 
     static func formatTokens(_ count: Int) -> String {
-        guard count >= 10_000 else { return String(count) }
-        var wan = Decimal(count) / Decimal(10_000)
-        var rounded = Decimal()
-        NSDecimalRound(&rounded, &wan, 2, .plain)
-        return plain(rounded, fractionDigits: 2) + "万"
+        let scales: [(Int, String)] = [
+            (1_000_000_000, "B"),
+            (1_000_000, "M"),
+            (1_000, "K"),
+        ]
+        for (scale, suffix) in scales where count >= scale {
+            var value = Decimal(count) / Decimal(scale)
+            var rounded = Decimal()
+            NSDecimalRound(&rounded, &value, 2, .plain)
+            return plain(rounded, fractionDigits: 2) + suffix
+        }
+        return String(count)
     }
 
     static func formatUSD(_ value: Decimal) -> String {
@@ -219,11 +227,33 @@ enum UsageMath {
 
     private static func grokLabel(_ raw: String) -> String? {
         let id = raw.split(separator: "/").last.map(String.init)?.lowercased() ?? raw.lowercased()
-        guard id.hasPrefix("grok") else { return nil }
-        let version = id.split(separator: "-").dropFirst().first.map(String.init) ?? ""
+        guard let range = id.range(of: "grok") else { return nil }
+        let version = id[range.upperBound...]
+            .split(separator: "-")
+            .first
+            .map(String.init) ?? ""
         let fast = id.contains("fast")
         if version.isEmpty { return fast ? "Grok Fast" : "Grok" }
         return fast ? "Grok \(version) Fast" : "Grok \(version)"
+    }
+
+    private static func opusLabel(_ raw: String) -> String? {
+        let id = raw.split(separator: "/").last.map(String.init)?.lowercased() ?? raw.lowercased()
+        guard id.contains("opus") else { return nil }
+        let version = id.split(separator: "-").filter { $0.contains(".") || $0.allSatisfy(\.isNumber) }
+        let compact = version.joined(separator: ".")
+        let effort: String
+        if id.contains("-max") {
+            effort = " Max"
+        } else if id.contains("-xhigh") {
+            effort = " XH"
+        } else if id.contains("-high") {
+            effort = " High"
+        } else {
+            effort = ""
+        }
+        if compact.isEmpty { return "Opus\(effort)" }
+        return "Opus \(compact)\(effort)"
     }
 
     private static func familyVersion(_ id: String, family: String) -> String? {
