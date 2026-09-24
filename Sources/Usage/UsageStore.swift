@@ -8,46 +8,6 @@ struct SourceReport: Codable, Equatable, Identifiable, Sendable {
     var id: String { name }
 }
 
-private struct CachedRecord: Codable, Equatable {
-    var model: String
-    var freshInput: Int
-    var cacheRead: Int
-    var cacheWrite: Int
-    var output: Int
-    var total: Int
-    var exactCost: String?
-
-    init(_ record: RawRecord) {
-        model = record.model
-        freshInput = record.parts.freshInput
-        cacheRead = record.parts.cacheRead
-        cacheWrite = record.parts.cacheWrite
-        output = record.parts.output
-        total = record.parts.total
-        exactCost = record.exactCostUSD.map(UsageMath.decimalString)
-    }
-
-    var raw: RawRecord {
-        RawRecord(
-            model: model,
-            parts: TokenBreakdown(
-                freshInput: freshInput,
-                cacheRead: cacheRead,
-                cacheWrite: cacheWrite,
-                output: output,
-                total: total
-            ),
-            exactCostUSD: exactCost.flatMap { Decimal(string: $0) }
-        )
-    }
-}
-
-private struct CacheEnvelope: Codable {
-    var generatedAt: Date
-    var records: [String: [CachedRecord]]
-    var sources: [SourceReport]
-}
-
 @MainActor
 @Observable
 final class UsageStore {
@@ -63,7 +23,12 @@ final class UsageStore {
     private(set) var settings = SettingsStore.load()
 
     private var inflight: Task<Void, Never>?
+    private var backfill: Task<Void, Never>?
     private var recordsBySource: [String: [RawRecord]] = [:]
+    private var todayBySource: [String: [RawRecord]] = [:]
+    private var todaySlices: [StoredSlice] = []
+    private var archive = HistoryArchive.load()
+    private(set) var selectedDay = Calendar.current.startOfDay(for: Date())
     private let paths: UsagePaths
 
     init(paths: UsagePaths = .live()) {
@@ -71,18 +36,72 @@ final class UsageStore {
         Task { await self.loop() }
     }
 
-    var legend: [StoredSlice] {
-        slices.sorted { lhs, rhs in
-            if lhs.tokens != rhs.tokens { return lhs.tokens > rhs.tokens }
-            return lhs.name < rhs.name
-        }
-    }
+    var legend: [StoredSlice] { UsageMath.slots(slices) }
+    var showDayPicker = false
     var totalTokens: Int { UsageMath.totalTokens(slices) }
     var totalCost: Decimal? { UsageMath.totalCost(slices) }
     var hasUnpriced: Bool { UsageMath.hasUnpriced(slices) }
 
     var statusTitle: String {
-        UsageMath.statusTitle(tokens: totalTokens, cost: totalCost, loaded: loaded)
+        let tokens = UsageMath.totalTokens(todaySlices)
+        return UsageMath.statusTitle(tokens: tokens, cost: UsageMath.totalCost(todaySlices), loaded: loaded || !todaySlices.isEmpty)
+    }
+
+    var activeSources: [SourceReport] {
+        UsageSettings.sources.compactMap { name in
+            guard settings.isEnabled(name) else { return nil }
+            let rows = recordsBySource[name] ?? []
+            guard rows.contains(where: { $0.parts.total > 0 }) else { return nil }
+            return SourceReport(name: name, ok: true, detail: name)
+        }
+    }
+
+    var isViewingToday: Bool {
+        Calendar.current.isDateInToday(selectedDay)
+    }
+
+    var dayLabel: String {
+        DayKey.label(for: selectedDay, today: Date())
+    }
+
+    func canShiftDay(_ delta: Int) -> Bool {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        guard let next = calendar.date(byAdding: .day, value: delta, to: selectedDay) else { return false }
+        return next >= DayKey.oldest(from: today) && next <= today
+    }
+
+    func shiftDay(_ delta: Int) {
+        guard canShiftDay(delta), let next = Calendar.current.date(byAdding: .day, value: delta, to: selectedDay) else { return }
+        selectedDay = Calendar.current.startOfDay(for: next)
+        showDayPicker = false
+        showSelectedDay()
+    }
+
+    var recentDays: [Date] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        return (0..<DayKey.retention).compactMap { calendar.date(byAdding: .day, value: -$0, to: today) }
+    }
+
+    func toggleDayPicker() {
+        showDayPicker.toggle()
+    }
+
+    func selectDay(_ day: Date) {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let day = calendar.startOfDay(for: day)
+        guard day >= DayKey.oldest(from: today), day <= today else { return }
+        selectedDay = day
+        showDayPicker = false
+        showSelectedDay()
+    }
+
+    func returnToToday() {
+        showDayPicker = false
+        selectedDay = Calendar.current.startOfDay(for: Date())
+        showSelectedDay()
     }
 
     func toggleSettings() {
@@ -95,6 +114,7 @@ final class UsageStore {
         settings = next
         SettingsStore.save(settings)
         guard loaded else { return }
+        todaySlices = collated(todayBySource)
         present(at: generatedAt, fromCache: showingCache)
     }
 
@@ -104,7 +124,22 @@ final class UsageStore {
         settings = next
         SettingsStore.save(settings)
         guard loaded else { return }
+        todaySlices = collated(todayBySource)
         present(at: generatedAt, fromCache: showingCache)
+    }
+
+    func setGlassTransparency(_ value: Double) {
+        var next = settings
+        next.glassTransparency = min(0.92, max(0.05, value))
+        settings = next
+        SettingsStore.save(settings)
+    }
+
+    func setContentTransparency(_ value: Double) {
+        var next = settings
+        next.contentTransparency = min(0.92, max(0.05, value))
+        settings = next
+        SettingsStore.save(settings)
     }
 
     func refresh() {
@@ -140,32 +175,125 @@ final class UsageStore {
                 reports.append(SourceReport(name: name, ok: false, detail: "\(name) \(message)"))
             }
         }
-        recordsBySource = Dictionary(uniqueKeysWithValues: names.map { name in
+        let fetched = Dictionary(uniqueKeysWithValues: names.map { name in
             if case .success(let rows) = results[name] { return (name, rows) }
             return (name, [])
         })
         if anySuccess {
-            sources = reports
-            present(at: end, fromCache: false)
-            SnapshotCache.save(CacheEnvelope(
-                generatedAt: end,
-                records: recordsBySource.mapValues { $0.map(CachedRecord.init) },
-                sources: reports
-            ))
+            todayBySource = fetched
+            todaySlices = collated(fetched)
+            archive.replace(day: start, records: fetched, sources: reports, at: end)
+            archive.prune(today: end)
+            archive.save()
+            if isViewingToday {
+                recordsBySource = fetched
+                sources = reports
+                present(at: end, fromCache: false)
+            }
             logPreview()
+            scheduleBackfill()
             return
         }
-        if let cached = SnapshotCache.load(on: start) {
-            recordsBySource = cached.records.mapValues { $0.map(\.raw) }
-            sources = cached.sources
-            present(at: cached.generatedAt, fromCache: true)
+        if let cached = archive.snapshot(on: start) {
+            todayBySource = cached.records.mapValues { $0.map(\.raw) }
+            todaySlices = collated(todayBySource)
+            if isViewingToday {
+                recordsBySource = todayBySource
+                sources = cached.sources
+                present(at: cached.generatedAt, fromCache: true)
+            }
+            scheduleBackfill()
             return
         }
-        slices = []
-        sources = reports
-        generatedAt = nil
-        loaded = true
-        showingCache = false
+        if isViewingToday {
+            slices = []
+            sources = reports
+            generatedAt = nil
+            loaded = true
+            showingCache = false
+        }
+        scheduleBackfill()
+    }
+
+    private func showSelectedDay() {
+        if isViewingToday {
+            recordsBySource = todayBySource
+            sources = archive.snapshot(on: selectedDay)?.sources ?? sources
+            present(at: archive.snapshot(on: selectedDay)?.generatedAt ?? Date(), fromCache: false)
+            return
+        }
+        guard let snapshot = archive.snapshot(on: selectedDay) else {
+            recordsBySource = [:]
+            slices = []
+            sources = []
+            generatedAt = nil
+            loaded = true
+            showingCache = true
+            return
+        }
+        recordsBySource = snapshot.records.mapValues { $0.map(\.raw) }
+        sources = snapshot.sources
+        present(at: snapshot.generatedAt, fromCache: true)
+    }
+
+    private func collated(_ records: [String: [RawRecord]]) -> [StoredSlice] {
+        var rows: [RawRecord] = []
+        for name in UsageSettings.sources where settings.isEnabled(name) {
+            rows.append(contentsOf: records[name] ?? [])
+        }
+        return UsageMath.collate(rows, includeEstimates: settings.includeEstimates)
+    }
+
+    private func scheduleBackfill() {
+        guard backfill == nil else { return }
+        backfill = Task { [weak self] in
+            await self?.backfillHistory()
+            self?.backfill = nil
+        }
+    }
+
+    private func backfillHistory() async {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let oldest = DayKey.oldest(from: today)
+        let end = Date()
+        async let codex = CodexReader.load(directory: paths.codexDirectory, start: oldest, end: end)
+        async let zcode = ZCodeReader.load(database: paths.zcodeDatabase, start: oldest)
+        async let kimi = KimiReader.load(sessions: paths.kimiSessions, start: oldest, end: end)
+        let local = await (codex, zcode, kimi)
+        let named: [(String, SourceResult)] = [("Codex", local.0), ("ZCode", local.1), ("Kimi", local.2)]
+        for (name, result) in named {
+            guard case .success(let rows) = result else { continue }
+            let report = SourceReport(name: name, ok: true, detail: name)
+            for (key, records) in HistoryArchive.bucket(rows) {
+                guard let day = DayKey.date(from: key), day < today else { continue }
+                archive.merge(day: day, source: name, records: records, report: report)
+            }
+        }
+        archive.prune(today: end)
+        archive.save()
+        if !isViewingToday { showSelectedDay() }
+        var cursorDay = oldest
+        while cursorDay < today {
+            let key = DayKey.string(for: cursorDay)
+            let hasCursor = archive.days[key]?.records["Cursor"] != nil
+            if !hasCursor {
+                let next = calendar.date(byAdding: .day, value: 1, to: cursorDay) ?? today
+                let result = await CursorReader.load(database: paths.cursorState, start: cursorDay, end: next.addingTimeInterval(-1))
+                if case .success(let rows) = result {
+                    archive.merge(
+                        day: cursorDay,
+                        source: "Cursor",
+                        records: rows,
+                        report: SourceReport(name: "Cursor", ok: true, detail: "Cursor")
+                    )
+                    archive.save()
+                    if DayKey.string(for: selectedDay) == key { showSelectedDay() }
+                }
+            }
+            guard let following = calendar.date(byAdding: .day, value: 1, to: cursorDay) else { break }
+            cursorDay = following
+        }
     }
 
     private func present(at date: Date?, fromCache: Bool) {
@@ -191,28 +319,3 @@ final class UsageStore {
     }
 }
 
-private enum SnapshotCache {
-    static func save(_ envelope: CacheEnvelope) {
-        guard let url = fileURL() else { return }
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(envelope) else { return }
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: url, options: .atomic)
-    }
-
-    static func load(on dayStart: Date) -> CacheEnvelope? {
-        guard let url = fileURL(), let data = try? Data(contentsOf: url) else { return nil }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let envelope = try? decoder.decode(CacheEnvelope.self, from: data) else { return nil }
-        guard envelope.generatedAt >= dayStart else { return nil }
-        return envelope
-    }
-
-    private static func fileURL() -> URL? {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appending(path: "Usage/last.json")
-    }
-}

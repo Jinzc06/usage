@@ -1,49 +1,31 @@
 import SwiftUI
 
 enum Palette {
-    static let paper = Color(hex: 0xF4F8FF)
-    static let card = Color(hex: 0xFFFFFF)
     static let ink = Color(hex: 0x1B2437)
-    static let track = Color(hex: 0xE3EDF8)
-    static let line = Color(hex: 0xD5E4F5)
+    static let track = Color.white.opacity(0.55)
+    static let line = Color.white.opacity(0.7)
     static let clay = Color(hex: 0xFF4D6A)
     static let muted = Color(hex: 0x6A7894)
     static let accent = Color(hex: 0x2F6BFF)
 
     private static let swatches: [UInt32] = [
-        0x2F6BFF, 0xFF8A1F, 0x14C8A8, 0xFFC400, 0xFF4F8B,
-        0x3EC6FF, 0x7C5CFF, 0xFF6B6B, 0x7ED957, 0xF06BD8,
+        0x8ECAE6, 0xC5B6E8, 0x9AD8C8, 0xE6C98A,
+        0xF0B8C6, 0xA8D0F0, 0xD4C4F2, 0xC8D8B0,
     ]
 
-    /// Stable for a given set of names. Collisions walk to the next free swatch so two models in view don't share a color.
+    /// Names are already ordered from most tokens to least. The first slice is sky blue, the second wisteria.
     static func assignedColors(names: [String]) -> [String: Color] {
-        var used = Set<Int>()
         var assigned: [String: Color] = [:]
-        for name in names.sorted() {
+        var index = 0
+        for name in names {
             if name == "其他" {
-                assigned[name] = Color(hex: 0xB7C3D6)
+                assigned[name] = Color(hex: 0xC5CDD6)
                 continue
             }
-            var index = Int(hash(name) % UInt64(swatches.count))
-            if used.count < swatches.count {
-                var steps = 0
-                while used.contains(index), steps < swatches.count {
-                    index = (index + 1) % swatches.count
-                    steps += 1
-                }
-            }
-            used.insert(index)
-            assigned[name] = Color(hex: swatches[index])
+            assigned[name] = Color(hex: swatches[index % swatches.count])
+            index += 1
         }
         return assigned
-    }
-
-    private static func hash(_ name: String) -> UInt64 {
-        var value: UInt64 = 5381
-        for byte in name.utf8 {
-            value = value &* 33 &+ UInt64(byte)
-        }
-        return value
     }
 }
 
@@ -53,6 +35,25 @@ extension Color {
             red: Double((hex >> 16) & 0xFF) / 255,
             green: Double((hex >> 8) & 0xFF) / 255,
             blue: Double(hex & 0xFF) / 255
+        )
+    }
+}
+
+extension View {
+    /// `transparency` is 0 for a nearly solid frost and 1 for the clearest glass.
+    /// The veil uses the same shape as the glass, so the rim fades with the slider.
+    func usageGlass(in shape: some Shape, transparency: Double) -> some View {
+        let frost = (1 - transparency) * 0.38
+        let glass: Glass = transparency > 0.5 ? .clear.interactive() : .regular.interactive()
+        return background { shape.fill(Color.white.opacity(frost)) }
+            .glassEffect(glass, in: shape)
+            .clipShape(shape)
+    }
+
+    func usageGlass(cornerRadius: CGFloat = 22, transparency: Double) -> some View {
+        usageGlass(
+            in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous),
+            transparency: transparency
         )
     }
 }

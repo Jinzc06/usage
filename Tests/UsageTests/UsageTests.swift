@@ -70,6 +70,7 @@ import Testing
     #expect(UsageMath.shortName("cursor-grok-4.6-high") == "Grok 4.6")
     #expect(UsageMath.shortName("claude-opus-5-5-max") == "Opus 5.5 Max")
     #expect(UsageMath.shortName("claude-opus-5-5-high") == "Opus 5.5 High")
+    #expect(UsageMath.shortName("default") == "Auto")
 }
 
 @Test func capMergesTheTail() {
@@ -117,15 +118,42 @@ import Testing
     #expect(!UsageMath.hasUnpriced(slices))
 }
 
+@Test func historyKeepsThirtyDaysAndBucketsByDay() {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 3600)!
+    let today = calendar.date(from: DateComponents(year: 2026, month: 9, day: 24))!
+    let oldest = DayKey.oldest(from: today, calendar: calendar)
+    #expect(DayKey.string(for: oldest, calendar: calendar) == "2026-08-26")
+    var archive = HistoryArchive()
+    archive.replace(day: today, records: [:], sources: [], at: today, calendar: calendar)
+    let stale = calendar.date(byAdding: .day, value: -40, to: today)!
+    archive.replace(day: stale, records: [:], sources: [], at: stale, calendar: calendar)
+    archive.prune(today: today, calendar: calendar)
+    #expect(archive.snapshot(on: today, calendar: calendar) != nil)
+    #expect(archive.snapshot(on: stale, calendar: calendar) == nil)
+    let parts = TokenBreakdown.accounting(input: 10, output: 1, cacheRead: 0, cacheWrite: 0)
+    let grouped = HistoryArchive.bucket([
+        RawRecord(model: "a", parts: parts, exactCostUSD: nil, at: today),
+        RawRecord(model: "b", parts: parts, exactCostUSD: nil, at: oldest),
+    ], calendar: calendar)
+    #expect(grouped["2026-09-24"]?.count == 1)
+    #expect(grouped["2026-08-26"]?.count == 1)
+    #expect(DayKey.label(for: today, today: today, calendar: calendar) == "今天")
+}
+
 @Test func settingsRoundTripKeepsSourceSwitches() throws {
     var settings = UsageSettings()
     settings.setEnabled("ZCode", false)
     settings.includeEstimates = false
+    settings.glassTransparency = 0.7
+    settings.contentTransparency = 0.2
     let data = try JSONEncoder().encode(settings)
     let decoded = try JSONDecoder().decode(UsageSettings.self, from: data)
     #expect(!decoded.isEnabled("ZCode"))
     #expect(decoded.isEnabled("Cursor"))
     #expect(!decoded.includeEstimates)
+    #expect(abs(decoded.glassTransparency - 0.7) < 0.000_001)
+    #expect(abs(decoded.contentTransparency - 0.2) < 0.000_001)
     #expect(decoded.everySourceOff == false)
 }
 

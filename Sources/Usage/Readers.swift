@@ -101,12 +101,20 @@ enum CursorReader {
                 let retryStatus = (retryResponse as? HTTPURLResponse)?.statusCode ?? 0
                 if retryStatus == 401 || retryStatus == 403 { return .failure("请重新登录") }
                 guard (200..<300).contains(retryStatus) else { return .failure("读取失败") }
-                return .success(parse(retryData))
+                return .success(stamp(parse(retryData), at: Date(timeIntervalSince1970: Double(startMs) / 1000)))
             }
             return .failure("请重新登录")
         }
         guard (200..<300).contains(status) else { return .failure("读取失败") }
-        return .success(parse(data))
+        return .success(stamp(parse(data), at: Date(timeIntervalSince1970: Double(startMs) / 1000)))
+    }
+
+    private static func stamp(_ records: [RawRecord], at date: Date) -> [RawRecord] {
+        records.map { record in
+            var copy = record
+            copy.at = date
+            return copy
+        }
     }
 
     private static func sessionCookie(database path: String) throws -> String {
@@ -181,7 +189,7 @@ enum CodexReader {
         return pending.compactMap { item in
             guard item.at >= start, item.at <= end else { return nil }
             let model = models[item.turn].flatMap { $0.isEmpty ? nil : $0 } ?? fallback
-            return RawRecord(model: model, parts: item.parts, exactCostUSD: nil)
+            return RawRecord(model: model, parts: item.parts, exactCostUSD: nil, at: item.at)
         }
     }
 
@@ -249,7 +257,9 @@ enum ZCodeReader {
                     bind: [.int(startMs)]
                 )
                 let records = rows.map { row -> RawRecord in
-                    RawRecord(
+                    let stamp = row[6].int
+                    let millis = stamp > 1_000_000_000_000 ? stamp : stamp * 1000
+                    return RawRecord(
                         model: row[0].text.isEmpty ? "unknown" : row[0].text,
                         parts: TokenBreakdown.accounting(
                             input: row[1].int,
@@ -258,7 +268,8 @@ enum ZCodeReader {
                             cacheWrite: row[4].int,
                             reportedTotal: row[5].int
                         ),
-                        exactCostUSD: nil
+                        exactCostUSD: nil,
+                        at: Date(timeIntervalSince1970: Double(millis) / 1000)
                     )
                 }
                 return .success(records)
@@ -319,7 +330,12 @@ enum KimiReader {
                 cacheRead: jsonInt(usage["inputCacheRead"]),
                 cacheWrite: jsonInt(usage["inputCacheCreation"])
             )
-            records.append(RawRecord(model: model, parts: parts, exactCostUSD: nil))
+            records.append(RawRecord(
+                model: model,
+                parts: parts,
+                exactCostUSD: nil,
+                at: Date(timeIntervalSince1970: time / 1000)
+            ))
         }
         while true {
             let chunk = handle.readData(ofLength: 64 * 1024)

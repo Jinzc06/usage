@@ -2,15 +2,45 @@ import AppKit
 import Observation
 import SwiftUI
 
+final class UsagePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 @MainActor
-final class StatusController: NSObject, NSPopoverDelegate {
+final class StatusController: NSObject {
     let store = UsageStore()
     private let status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    private let popover = NSPopover()
+    private let panel: UsagePanel
     private var outsideClick: Any?
     private var previewWindow: NSWindow?
     private var didRender = false
+    private var anchorTop: CGFloat?
     private let preview = ProcessInfo.processInfo.arguments.contains("--preview")
+
+    override init() {
+        panel = UsagePanel(
+            contentRect: NSRect(x: 0, y: 0, width: 588, height: 320),
+            styleMask: [.borderless, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        super.init()
+        let host = NSHostingController(rootView: PopoverView(store: store))
+        panel.isFloatingPanel = true
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = .statusBar
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        host.sizingOptions = .preferredContentSize
+        host.view.wantsLayer = true
+        host.view.layer?.backgroundColor = NSColor.clear.cgColor
+        host.view.layer?.isOpaque = false
+        panel.contentViewController = host
+    }
 
     func start() {
         let button = status.button
@@ -18,13 +48,6 @@ final class StatusController: NSObject, NSPopoverDelegate {
         button?.target = self
         button?.action = #selector(toggle)
         button?.title = store.statusTitle
-
-        let host = NSHostingController(rootView: PopoverView(store: store))
-        host.sizingOptions = .preferredContentSize
-        popover.contentViewController = host
-        popover.behavior = .applicationDefined
-        popover.delegate = self
-        popover.contentSize = NSSize(width: 588, height: 280)
         trackTitle()
 
         if preview {
@@ -34,7 +57,8 @@ final class StatusController: NSObject, NSPopoverDelegate {
             window.title = "今天用量"
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
-            window.backgroundColor = NSColor(srgbRed: 244 / 255, green: 248 / 255, blue: 255 / 255, alpha: 1)
+            window.backgroundColor = .clear
+            window.isOpaque = false
             window.setContentSize(NSSize(width: 588, height: 320))
             window.center()
             window.makeKeyAndOrderFront(nil)
@@ -63,7 +87,7 @@ final class StatusController: NSObject, NSPopoverDelegate {
     }
 
     private func resizeIfNeeded() {
-        if popover.isShown { resizePopover() }
+        if panel.isVisible { resizePanel(keepingTop: true) }
         guard let window = previewWindow, let host = window.contentViewController else { return }
         host.view.layoutSubtreeIfNeeded()
         var size = host.view.fittingSize
@@ -95,35 +119,70 @@ final class StatusController: NSObject, NSPopoverDelegate {
     }
 
     @objc private func toggle() {
-        guard let button = status.button else { return }
-        if popover.isShown {
-            closePopover()
+        if panel.isVisible {
+            closePanel()
             return
         }
-        resizePopover()
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        outsideClick = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            Task { @MainActor in self?.closePopover() }
-        }
+        showPanel()
         store.refresh()
     }
 
-    func popoverDidClose(_ notification: Notification) {
+    private func showPanel() {
+        guard let button = status.button, let statusWindow = button.window else { return }
+        resizePanel(keepingTop: false)
+        let buttonOnScreen = statusWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        var frame = panel.frame
+        frame.origin.x = buttonOnScreen.midX - frame.width / 2
+        frame.origin.y = buttonOnScreen.minY - frame.height - 8
+        if let screen = statusWindow.screen ?? NSScreen.main {
+            let visible = screen.visibleFrame
+            frame.origin.x = min(max(frame.origin.x, visible.minX + 8), visible.maxX - frame.width - 8)
+            if frame.minY < visible.minY {
+                frame.origin.y = buttonOnScreen.maxY + 8
+            }
+        }
+        anchorTop = frame.maxY
+        panel.setFrame(frame, display: true)
+        panel.orderFrontRegardless()
+        panel.makeKey()
+        status.button?.highlight(true)
+        outsideClick = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.clickIsOnStatusButton() { return }
+                self.closePanel()
+            }
+        }
+    }
+
+    private func closePanel() {
+        store.returnToToday()
+        panel.orderOut(nil)
+        status.button?.highlight(false)
+        anchorTop = nil
         if let outsideClick {
             NSEvent.removeMonitor(outsideClick)
             self.outsideClick = nil
         }
     }
 
-    private func closePopover() {
-        popover.performClose(nil)
+    private func clickIsOnStatusButton() -> Bool {
+        guard let button = status.button, let window = button.window else { return false }
+        let rect = window.convertToScreen(button.convert(button.bounds, to: nil))
+        return rect.contains(NSEvent.mouseLocation)
     }
 
-    private func resizePopover() {
-        guard let host = popover.contentViewController as? NSHostingController<PopoverView> else { return }
-        let fitted = host.sizeThatFits(in: NSSize(width: 588, height: 1200))
-        let height = max(fitted.height, store.showSettings ? 640 : 300)
-        popover.contentSize = NSSize(width: 588, height: height)
+    private func resizePanel(keepingTop: Bool) {
+        guard let host = panel.contentViewController as? NSHostingController<PopoverView> else { return }
+        let fitted = host.sizeThatFits(in: NSSize(width: 588, height: 1400))
+        let height = max(fitted.height, store.showSettings ? 760 : 340)
+        var frame = panel.frame
+        let top = anchorTop ?? frame.maxY
+        frame.size = NSSize(width: 588, height: height)
+        if keepingTop {
+            frame.origin.y = top - height
+        }
+        panel.setFrame(frame, display: true)
     }
 }
 

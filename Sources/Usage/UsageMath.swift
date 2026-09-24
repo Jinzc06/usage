@@ -50,6 +50,7 @@ struct RawRecord: Equatable, Sendable {
     var parts: TokenBreakdown
     /// Set when the source reports a dollar amount. Estimation is skipped.
     var exactCostUSD: Decimal?
+    var at: Date = .distantPast
 }
 
 struct StoredSlice: Equatable, Codable, Sendable, Identifiable {
@@ -104,6 +105,8 @@ enum UsageMath {
             return "GLM FlashX"
         case "codex-auto-review":
             return "Auto Review"
+        case "default":
+            return "Auto"
         default:
             return raw.split(separator: "/").last.map(String.init) ?? raw
         }
@@ -139,7 +142,14 @@ enum UsageMath {
         .sorted(by: sortSlices)
     }
 
-    /// Keep the five largest token slices. The rest become 其他.
+    /// At most `count` rows. When there are more, the last row is 其他.
+    static func slots(_ slices: [StoredSlice], count: Int = 8) -> [StoredSlice] {
+        let sorted = slices.sorted(by: sortSlices)
+        guard sorted.count > count else { return sorted }
+        return cap(sorted, limit: count - 1)
+    }
+
+    /// Keep the largest token slices. The rest become 其他.
     static func cap(_ slices: [StoredSlice], limit: Int = 5) -> [StoredSlice] {
         let sorted = slices.sorted(by: sortSlices)
         guard sorted.count > limit else { return sorted }

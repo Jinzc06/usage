@@ -21,6 +21,7 @@ struct DonutChart: View {
     var slices: [DonutSlice]
     var center: String
     var hover: ChartHover
+    var transparency: Double
 
     private let side: CGFloat = 124
     private let lineWidth: CGFloat = 16
@@ -132,14 +133,9 @@ struct DonutChart: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white)
-                .shadow(color: Color.black.opacity(0.08), radius: 6, y: 2)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Palette.line, lineWidth: 1)
+        .usageGlass(
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous),
+            transparency: transparency
         )
     }
 }
